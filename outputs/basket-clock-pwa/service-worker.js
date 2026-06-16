@@ -1,7 +1,7 @@
-const CACHE_NAME = "basket-clock-v21";
+const CACHE_NAME = "basket-clock-v22";
+const INDEX_PATH = "./index.html";
 
 const APP_SHELL = [
-  "./",
   "./index.html",
   "./style.css",
   "./app.js",
@@ -24,18 +24,74 @@ const APP_SHELL = [
 ];
 
 function appUrl(path) {
-  return new URL(path, self.registration.scope).toString();
+  return new URL(path, self.registration.scope).href;
 }
 
-function indexRequest() {
-  return new Request(appUrl("./index.html"), { cache: "reload" });
+function requestFor(path) {
+  return new Request(appUrl(path), { cache: "reload" });
+}
+
+function cleanHtmlResponse(responseText) {
+  return new Response(responseText, {
+    status: 200,
+    statusText: "OK",
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-cache"
+    }
+  });
+}
+
+async function fetchCleanIndex() {
+  const response = await fetch(appUrl(INDEX_PATH), {
+    cache: "reload",
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`index.html fetch failed: ${response.status}`);
+  }
+
+  return cleanHtmlResponse(await response.text());
+}
+
+async function putCleanIndex(cache) {
+  const cleanIndex = await fetchCleanIndex();
+  await cache.put(appUrl(INDEX_PATH), cleanIndex.clone());
+  return cleanIndex;
+}
+
+async function getCachedCleanIndex(cache) {
+  const candidates = [
+    appUrl(INDEX_PATH),
+    INDEX_PATH,
+    "index.html"
+  ];
+
+  for (const candidate of candidates) {
+    const cached = await cache.match(candidate);
+    if (cached && !cached.redirected) {
+      return cached;
+    }
+  }
+
+  return null;
 }
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) =>
-      cache.addAll(APP_SHELL.map((path) => new Request(appUrl(path), { cache: "reload" })))
-    )
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.all(
+        APP_SHELL.map(async (path) => {
+          if (path === INDEX_PATH) {
+            await putCleanIndex(cache);
+            return;
+          }
+
+          await cache.add(requestFor(path));
+        })
+      );
+    })
   );
   self.skipWaiting();
 });
@@ -46,7 +102,7 @@ self.addEventListener("activate", (event) => {
       caches.keys().then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key !== CACHE_NAME)
+            .filter((key) => key !== CACHE_NAME && key.startsWith("basket-clock"))
             .map((key) => caches.delete(key))
         )
       ),
@@ -62,23 +118,16 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
-        cache.match(indexRequest()).then((cachedIndex) => {
-          if (cachedIndex) return cachedIndex;
-          return cache.match(appUrl("./")).then((cachedRoot) => {
-            if (cachedRoot) return cachedRoot;
-            return fetch(event.request)
-              .then((response) => {
-                cache.put(indexRequest(), response.clone());
-                return response;
-              })
-              .catch(() => new Response("Offline cache is not ready.", {
-                status: 503,
-                headers: { "Content-Type": "text/plain; charset=utf-8" }
-              }));
-          });
-        })
-      )
+      caches.open(CACHE_NAME).then(async (cache) => {
+        const cachedIndex = await getCachedCleanIndex(cache);
+        if (cachedIndex) return cachedIndex;
+
+        try {
+          return await putCleanIndex(cache);
+        } catch {
+          return cleanHtmlResponse("<!doctype html><title>Basket Clock</title><body>Offline cache is not ready.</body>");
+        }
+      })
     );
     return;
   }
@@ -86,14 +135,20 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.open(CACHE_NAME).then((cache) =>
       cache.match(event.request).then((cachedResponse) => {
-        if (cachedResponse) return cachedResponse;
+        if (cachedResponse && !cachedResponse.redirected) return cachedResponse;
 
         return fetch(event.request)
           .then((networkResponse) => {
-            cache.put(event.request, networkResponse.clone());
+            if (!networkResponse.redirected) {
+              cache.put(event.request, networkResponse.clone());
+            }
             return networkResponse;
           })
-          .catch(() => cache.match(indexRequest()));
+          .catch(() =>
+            getCachedCleanIndex(cache).then((cachedIndex) =>
+              cachedIndex || cleanHtmlResponse("<!doctype html><title>Basket Clock</title><body>Offline cache is not ready.</body>")
+            )
+          );
       })
     )
   );
