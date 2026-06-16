@@ -1,0 +1,13 @@
+{
+  "name": "Basket Clock",
+  "short_name": "BasketClock",
+  "description": "Local basketball timer and scoreboard for iPad.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["sports", "utilities"],
+  "lang": "ja"
+}
